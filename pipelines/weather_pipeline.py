@@ -1,10 +1,15 @@
 """F3 -- weather + CAMS feature pipeline.
 
-open-meteo ERA5 weather + CAMS air quality, hourly, per station -> FG
-`station_features`. The coarse modulator (wind, boundary layer, precipitation) and
-the ~10km modelled prior (CAMS pm2.5/no2/...) that the model refines with local
-context into a station reading. Keyed by (station_eoi, valid_time); F5 joins it to
-the station labels.
+open-meteo ERA5 weather + CAMS air quality, hourly -> FG `station_features`. The
+coarse modulator (wind, boundary layer, precipitation) and the ~10km modelled prior
+(CAMS pm2.5/no2/...) that the model refines with local context into a station
+reading. Keyed by (station_eoi, valid_time); F5 joins it to the station labels.
+
+Fetching is per GRID CELL, not per station: stations snap to ~0.25 deg cells (the
+native resolution of the underlying ERA5/CAMS models), one open-meteo fetch per
+unique cell, and the series fans out to every station in the cell. Per-station
+fetching burned the free-tier daily cap (600/min, 5k/hr, 10k/day) on a few hundred
+stations; cells cut the call count ~5-10x with no information loss.
 
 Independent of the F2 backfill: the station set + coords come from EEA metadata,
 not from the label FG, so this runs in parallel.
@@ -19,6 +24,7 @@ Config via argv (`--key value`) or env (KEY); argv wins. Keys:
 """
 
 import glob
+import math
 import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -57,7 +63,8 @@ def config():
         "limit_stations": int(get("limit_stations", "0")),
         "sample": int(get("sample", "0")),
         "batch_rows": int(get("batch_rows", "1000000")),
-        "parallel": int(get("parallel", "16")),
+        "cell": float(get("cell", "0.25")),
+        "parallel": int(get("parallel", "4")),
         "resume": get("resume", "1") == "1",
         "dry": get("dry", "0") == "1",
     }
@@ -124,26 +131,31 @@ def main():
 
     cols = ["station_eoi", "valid_time", "lat", "lon"] + FEATURES
 
-    def fetch_one(row):
-        """One station -> its hourly features df (or None). Runs in a worker thread;
+    def snap(v):
+        # cell CENTER: weather is fetched where the underlying model grid lives
+        return round((math.floor(v / cfg["cell"]) + 0.5) * cfg["cell"], 4)
+
+    def fetch_cell(cell):
+        """One grid cell -> its hourly series (or None). Runs in a worker thread;
         the slow part is the two open-meteo HTTP calls, so fetching is parallel."""
-        eoi = row["station_eoi"]
+        clat, clon = cell
         try:
-            df = openmeteo.station_hourly(row["lat"], row["lon"], cfg["start"], cfg["end"])
+            df = openmeteo.station_hourly(clat, clon, cfg["start"], cfg["end"])
         except Exception as exc:
-            print(f"  ! {eoi} open-meteo failed: {exc}")
-            return None
-        if df.empty:
-            return None
-        df.insert(0, "station_eoi", eoi)
-        df["lat"], df["lon"] = row["lat"], row["lon"]
-        df = df.dropna(subset=["cams_no2", "cams_pm25"])  # need the prior
-        return None if df.empty else df[cols]
+            print(f"  ! cell ({clat}, {clon}) open-meteo failed: {exc}")
+            return cell, None
+        if not df.empty:
+            df = df.dropna(subset=["cams_no2", "cams_pm25"])  # need the prior
+        return cell, (None if df.empty else df)
 
     todo = [row for _, row in stations.iterrows() if not (done and row["station_eoi"] in done)]
     if cfg["limit_stations"]:
         todo = todo[:cfg["limit_stations"]]
-    print(f"{len(todo)} stations to fetch ({cfg['parallel']} in parallel)")
+    cells = {}
+    for row in todo:
+        cells.setdefault((snap(row["lat"]), snap(row["lon"])), []).append(row)
+    print(f"{len(todo)} stations -> {len(cells)} grid cells at {cfg['cell']} deg "
+          f"(~{2 * len(cells)} API calls, {cfg['parallel']} in parallel)")
 
     n, total = 0, 0
     buf, buf_rows = [], 0
@@ -160,19 +172,25 @@ def main():
         print(f"  wrote {len(big)} rows ({n} stations done, running {total})")
 
     with ThreadPoolExecutor(max_workers=cfg["parallel"]) as ex:
-        for df in ex.map(fetch_one, todo):  # inserts stay serial in the main thread
-            if df is None:
+        # fan-out + inserts stay serial in the main thread
+        for cell, series in ex.map(fetch_cell, list(cells)):
+            if series is None:
                 continue
-            n += 1
-            if cfg["dry"]:
-                if n == 1:
-                    print(df[["station_eoi", "valid_time", "wind_speed", "pressure",
-                              "cams_no2", "cams_pm25"]].head(4).to_string())
-                continue
-            buf.append(df)
-            buf_rows += len(df)
-            if buf_rows >= cfg["batch_rows"]:
-                flush()
+            for row in cells[cell]:
+                df = series.copy()
+                df.insert(0, "station_eoi", row["station_eoi"])
+                df["lat"], df["lon"] = row["lat"], row["lon"]  # real station coords
+                df = df[cols]
+                n += 1
+                if cfg["dry"]:
+                    if n == 1:
+                        print(df[["station_eoi", "valid_time", "wind_speed", "pressure",
+                                  "cams_no2", "cams_pm25"]].head(4).to_string())
+                    continue
+                buf.append(df)
+                buf_rows += len(df)
+                if buf_rows >= cfg["batch_rows"]:
+                    flush()
     if not cfg["dry"]:
         flush()
     print(f"DONE: {n} stations, {total} rows written to station_features")

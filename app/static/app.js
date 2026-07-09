@@ -11,7 +11,7 @@ let cam = { cx: (FRAME.lon0 + FRAME.lon1) / 2, cy: (FRAME.lat0 + FRAME.lat1) / 2
 let DPR = 1, W = 0, H = 0;
 const S = { stations: [], field: null, pol: "pm25", tIdx: null, playing: false,
             sel: null, status: "starting" };
-const VMAX = { pm25: 50, no2: 80 };   // ramp ceiling per pollutant (ug/m3)
+const VMAX = { pm25: 30, no2: 60 };   // ramp ceiling (ug/m3): EU "poor" band tops the ramp
 
 // ---- projection (Web Mercator, tiles align pixel-perfect) ----
 const MER = 180 / Math.PI;
@@ -102,23 +102,25 @@ function drawField() {
   const SC = 4;
   const gw = Math.max(1, Math.ceil(W / SC)), gh = Math.max(1, Math.ceil(H / SC));
   const acc = new Float32Array(gw * gh), wsum = new Float32Array(gw * gh);
-  // grid spacing in raster cells decides the splat radius: cells overlap just
-  // enough to read as a continuous pixelated field, not confetti
-  const stepPx = Math.max(2, 0.15 * cam.scale / SC);
-  const rad = Math.max(2, stepPx * 0.85);
+  // Shepard-style weighted splat = smooth interpolated field. Radius follows the
+  // real grid step; the y radius is stretched by 1/cos(lat) because grid rows are
+  // lat-regular but Mercator y is not (the old isotropic radius left dash rows).
+  const step = f.step || 0.35;
+  const radX = Math.max(2, step * cam.scale / SC * 1.35);
   const vmax = VMAX[S.pol];
   for (let i = 0; i < f.points.length; i++) {
     const v = vals[i];
     if (v == null) continue;
     const p = f.points[i], q = proj(p.lon, p.lat);
+    const radY = radX / Math.max(0.4, Math.cos(p.lat * Math.PI / 180));
     const gx = q.x / SC, gy = q.y / SC;
-    if (gx < -rad || gx > gw + rad || gy < -rad || gy > gh + rad) continue;
-    const x0 = Math.max(0, (gx - rad) | 0), x1 = Math.min(gw - 1, (gx + rad) | 0);
-    const y0 = Math.max(0, (gy - rad) | 0), y1 = Math.min(gh - 1, (gy + rad) | 0);
+    if (gx < -radX || gx > gw + radX || gy < -radY || gy > gh + radY) continue;
+    const x0 = Math.max(0, (gx - radX) | 0), x1 = Math.min(gw - 1, (gx + radX) | 0);
+    const y0 = Math.max(0, (gy - radY) | 0), y1 = Math.min(gh - 1, (gy + radY) | 0);
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-      const dx = x - gx, dy = y - gy, d2 = dx * dx + dy * dy;
-      if (d2 > rad * rad) continue;
-      const w = Math.exp(-d2 / (rad * rad * 0.45));
+      const dx = (x - gx) / radX, dy = (y - gy) / radY, d2 = dx * dx + dy * dy;
+      if (d2 > 1) continue;
+      const w = Math.exp(-d2 / 0.45);
       acc[y * gw + x] += v * w; wsum[y * gw + x] += w;
     }
   }
@@ -127,35 +129,78 @@ function drawField() {
   const rcx = rasterBuf.getContext("2d"), img = rcx.createImageData(gw, gh), D = img.data;
   for (let i = 0; i < acc.length; i++) {
     if (wsum[i] < 0.05) { D[i * 4 + 3] = 0; continue; }
-    const v = acc[i] / wsum[i], t = v / vmax;
+    const v = acc[i] / wsum[i], t = Math.min(1, v / vmax);
     const c = ramp(PRED, t);
     D[i * 4] = c[0]; D[i * 4 + 1] = c[1]; D[i * 4 + 2] = c[2];
-    D[i * 4 + 3] = Math.round(120 + 110 * Math.min(1, t));
+    // sqrt curve: low values stay translucent haze, high values go opaque alarm
+    D[i * 4 + 3] = Math.round(60 + 165 * Math.sqrt(t));
   }
   rcx.putImageData(img, 0, 0);
-  cx.imageSmoothingEnabled = false;              // pixelated on purpose
   cx.drawImage(rasterBuf, 0, 0, gw, gh, 0, 0, gw * SC, gh * SC);
-  cx.imageSmoothingEnabled = true;
 }
 
 // ---- measured stations: cool-ramp dots with white halo ----
 function drawStations() {
   const vmax = VMAX[S.pol];
+  const zoomed = cam.scale > 90;                   // country-level zoom
   for (const s of S.stations) {
     const q = proj(s.lon, s.lat);
     if (q.x < -20 || q.x > W + 20 || q.y < -20 || q.y > H + 20) continue;
     const v = s[S.pol];
-    const has = v != null;
-    cx.beginPath(); cx.arc(q.x, q.y, has ? 5 : 3, 0, 7);
-    cx.fillStyle = "rgba(255,255,255,.95)"; cx.fill();
-    cx.beginPath(); cx.arc(q.x, q.y, has ? 3.6 : 1.8, 0, 7);
-    cx.fillStyle = has ? `rgb(${ramp(MEAS, v / vmax).join(",")})` : "#94a3b8";
-    cx.fill();
+    if (v == null) {
+      // no reading loaded: a faint tick, only when zoomed in -- at continent
+      // scale valueless dots read as confetti noise
+      if (zoomed) {
+        cx.beginPath(); cx.arc(q.x, q.y, 1.6, 0, 7);
+        cx.fillStyle = "rgba(100,116,139,.5)"; cx.fill();
+      }
+      continue;
+    }
+    cx.beginPath(); cx.arc(q.x, q.y, 5.2, 0, 7);
+    cx.fillStyle = "rgba(255,255,255,.9)"; cx.fill();
+    cx.beginPath(); cx.arc(q.x, q.y, 3.8, 0, 7);
+    cx.fillStyle = `rgb(${ramp(MEAS, v / vmax).join(",")})`; cx.fill();
+    if (zoomed) {
+      cx.font = "600 10px Inter, sans-serif"; cx.fillStyle = "#1e293b";
+      cx.fillText(v.toFixed(0), q.x + 7, q.y + 3);
+    }
     if (s === S.sel) {
       cx.strokeStyle = "#0ea5e9"; cx.lineWidth = 2;
       cx.beginPath(); cx.arc(q.x, q.y, 9, 0, 7); cx.stroke();
     }
   }
+}
+
+// ---- monitored-vs-predicted frontier: union outline of 25 km disks around the
+// sensors. Inside the line the field is anchored by ground truth; outside it is
+// pure prediction. Built by filling the union offscreen, erasing a shrunk copy
+// (destination-out), and drawing the leftover ring.
+const COVER_KM = 25;
+let coverBuf = null;
+function drawCoverage() {
+  if (!S.stations.length) return;
+  if (!coverBuf) coverBuf = document.createElement("canvas");
+  coverBuf.width = W; coverBuf.height = H;
+  const oc = coverBuf.getContext("2d");
+  const disks = [];
+  for (const s of S.stations) {
+    const q = proj(s.lon, s.lat);
+    const r = COVER_KM / 111 * cam.scale / Math.max(0.4, Math.cos(s.lat * Math.PI / 180));
+    if (q.x < -r || q.x > W + r || q.y < -r || q.y > H + r) continue;
+    disks.push([q.x, q.y, r]);
+  }
+  if (!disks.length) return;
+  oc.fillStyle = "#000";
+  for (const [x, y, r] of disks) { oc.beginPath(); oc.arc(x, y, r, 0, 7); oc.fill(); }
+  oc.globalCompositeOperation = "destination-out";
+  for (const [x, y, r] of disks) { oc.beginPath(); oc.arc(x, y, Math.max(0, r - 1.7), 0, 7); oc.fill(); }
+  oc.globalCompositeOperation = "source-over";
+  // recolor the ring via source-in, then stamp it on the map
+  oc.globalCompositeOperation = "source-in";
+  oc.fillStyle = "rgba(8,145,178,.75)";
+  oc.fillRect(0, 0, W, H);
+  oc.globalCompositeOperation = "source-over";
+  cx.drawImage(coverBuf, 0, 0);
 }
 
 let clickMark = null;
@@ -175,6 +220,7 @@ function draw() {
   cx.fillStyle = "#dbeafe"; cx.fillRect(0, 0, W, H);
   drawTiles();
   drawField();
+  drawCoverage();
   drawStations();
   drawClickMark();
   cx.restore();

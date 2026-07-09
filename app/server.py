@@ -95,15 +95,21 @@ def hourly_conditions(points):
     hour axis around now (UTC ISO strings) and frames[t] is a DataFrame with one
     row per point (lat, lon, altitude + weather + cams). Batched 100 locs/call;
     the hourly= series costs the same call count as current= but buys the timeline."""
-    per_point = []
-    times = None
-    for i in range(0, len(points), 100):
-        chunk = points[i:i + 100]
+    from concurrent.futures import ThreadPoolExecutor
+
+    def fetch_chunk(chunk):
         lats, lons = [p[0] for p in chunk], [p[1] for p in chunk]
         wx = _fetch_json(_om_url(FORECAST_API, lats, lons, list(openmeteo.WEATHER)))
         aq = _fetch_json(_om_url(AQ_API, lats, lons, list(openmeteo.CAMS)))
-        wx = wx if isinstance(wx, list) else [wx]
-        aq = aq if isinstance(aq, list) else [aq]
+        return (chunk, wx if isinstance(wx, list) else [wx],
+                aq if isinstance(aq, list) else [aq])
+
+    chunks = [points[i:i + 100] for i in range(0, len(points), 100)]
+    per_point = []
+    times = None
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        results = list(ex.map(fetch_chunk, chunks))
+    for chunk, wx, aq in results:
         for (lat, lon), w, a in zip(chunk, wx, aq):
             h_w, h_a = w.get("hourly") or {}, a.get("hourly") or {}
             if times is None and h_w.get("time"):
@@ -160,25 +166,18 @@ def predict(df, pol, t=None):
 
 
 # ---- the field -------------------------------------------------------------------
-def grid_points(stations):
-    """0.15-deg grid per station cluster (5-deg tiles merged to boxes), coarsened
-    when a box would blow past MAX_BOX_PTS."""
-    boxes = {}
-    for s in stations:
-        key = (int(s["lon"] // 5), int(s["lat"] // 5))
-        b = boxes.setdefault(key, [s["lon"], s["lat"], s["lon"], s["lat"]])
-        b[0], b[1] = min(b[0], s["lon"]), min(b[1], s["lat"])
-        b[2], b[3] = max(b[2], s["lon"]), max(b[3], s["lat"])
-    pts = []
-    for x0, y0, x1, y1 in boxes.values():
-        x0, y0, x1, y1 = x0 - 0.4, y0 - 0.4, x1 + 0.4, y1 + 0.4
-        step = GRID_STEP
-        while ((x1 - x0) / step + 1) * ((y1 - y0) / step + 1) > MAX_BOX_PTS:
-            step *= 1.5
-        lats = np.arange(y0, y1 + 1e-9, step)
-        lons = np.arange(x0, x1 + 1e-9, step)
-        pts += [(round(float(la), 4), round(float(lo), 4)) for la in lats for lo in lons]
-    return pts
+EU_BBOX = (-10.0, 35.0, 30.0, 60.0)   # lon0, lat0, lon1, lat1 -- the whole theatre
+EU_STEP = 0.35                          # deg; ~8k points, one call batch of ~160/refresh
+
+
+def grid_points(_stations):
+    """One continuous grid over Europe. The model's whole point is predicting
+    where no sensor exists; CAMS + weather cover the continent, so the field
+    does too. Station density only affects trust (dist_km), not coverage."""
+    x0, y0, x1, y1 = EU_BBOX
+    lats = np.arange(y0, y1 + 1e-9, EU_STEP)
+    lons = np.arange(x0, x1 + 1e-9, EU_STEP)
+    return [(round(float(la), 4), round(float(lo), 4)) for la in lats for lo in lons]
 
 
 def _dist_km(lat1, lon1, lat2, lon2):
@@ -201,29 +200,29 @@ def refresh_field():
     if not frames:
         return
     base = frames[0][["lat", "lon"]].reset_index(drop=True)
-    st_ll = [(s["lat"], s["lon"]) for s in S["stations"]]
-    points = []
-    for _, r in base.iterrows():
-        d = min((_dist_km(r["lat"], r["lon"], la, lo) for la, lo in st_ll), default=9e9)
-        points.append({"lat": round(float(r["lat"]), 4), "lon": round(float(r["lon"]), 4),
-                       "dist_km": round(d, 1)})
+    plat, plon = base["lat"].to_numpy(), base["lon"].to_numpy()
+    slat = np.array([s["lat"] for s in S["stations"]])
+    slon = np.array([s["lon"] for s in S["stations"]])
+    # nearest-station distance, vectorized (equirectangular is fine at this scale)
+    dy = (plat[:, None] - slat[None, :]) * 111.0
+    dx = (plon[:, None] - slon[None, :]) * 111.0 * np.cos(np.radians(plat))[:, None]
+    dmin = np.sqrt(dx ** 2 + dy ** 2).min(axis=1) if len(slat) else np.full(len(plat), 9e9)
+    points = [{"lat": round(float(la), 4), "lon": round(float(lo), 4),
+               "dist_km": round(float(d), 1)}
+              for la, lo, d in zip(plat, plon, dmin)]
     values = {p: [] for p in POLLUTANTS}
-    priors = {p: [] for p in POLLUTANTS}
     for iso, df in zip(times, frames):
         t = datetime.fromisoformat(iso).replace(tzinfo=timezone.utc)
         ok = df["cams_pm25"].notna() & df["cams_no2"].notna()
         for pol in POLLUTANTS:
-            pred, prior = predict(df.where(ok), pol, t)
-            rnd = lambda a: [None if (v is None or not np.isfinite(v)) else round(float(v), 1)
-                             for v in a]
-            values[pol].append(rnd(pred))
-            priors[pol].append(rnd(prior))
+            pred, _ = predict(df.where(ok), pol, t)
+            values[pol].append([None if (v is None or not np.isfinite(v)) else round(float(v), 1)
+                                for v in pred])
     now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:00")
-    S["field"] = {"times": times,
+    S["field"] = {"times": times, "step": EU_STEP,
                   "now_idx": times.index(now_iso) if now_iso in times else len(times) // 2,
                   "points": points,
-                  "pm25": values["pm25"], "no2": values["no2"],
-                  "pm25_prior": priors["pm25"], "no2_prior": priors["no2"]}
+                  "pm25": values["pm25"], "no2": values["no2"]}
     S["field_ts"] = time.time()
     S["status"] = "model" if S["models"] else "cams-prior"
     print(f"field: {len(points)} points x {len(times)} frames, status={S['status']}")

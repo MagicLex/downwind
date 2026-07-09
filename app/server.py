@@ -256,9 +256,11 @@ def refresh_labels():
     import hopsworks
     fs = hopsworks.login().get_feature_store()
     fg = fs.get_feature_group("station_measurement", version=1)
-    start = pd.Timestamp.utcnow() - pd.Timedelta(days=21)
+    start = (pd.Timestamp.utcnow() - pd.Timedelta(days=21)).to_pydatetime()
+    # .filter() = event-time pushdown; read(start_time=) is COMMIT-time travel
+    # and returns 0 rows / FlightServerError here (scar 2026-07-09)
     df = fg.select(["station_eoi", "pollutant", "value", "start_time"]) \
-           .read(dataframe_type="pandas", start_time=start.to_pydatetime())
+           .filter(fg.start_time >= start).read(dataframe_type="pandas")
     if df.empty:
         return
     df = df.sort_values("start_time").groupby(["station_eoi", "pollutant"]).last()
@@ -296,11 +298,13 @@ def load_models():
 
 async def _loop(fn, every, name):
     while True:
+        delay = every
         try:
             await asyncio.to_thread(fn)
         except Exception as exc:
             print(f"{name} loop error: {str(exc)[:120]}")
-        await asyncio.sleep(every)
+            delay = min(every, 300)  # a failed pass retries soon, not next period
+        await asyncio.sleep(delay)
 
 
 # ---- app ---------------------------------------------------------------------------

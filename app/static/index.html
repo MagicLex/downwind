@@ -59,7 +59,7 @@
   #legend { bottom: 16px; right: 14px; padding: 10px 14px; font-size: 11px; color: var(--sub); }
   #legend .bar { width: 180px; height: 9px; border-radius: 5px; margin: 5px 0 2px; }
   #legend .bar.pred { background: linear-gradient(90deg,#fef9c3,#fbbf24,#f97316,#dc2626,#7f1d1d); }
-  #legend .bar.meas { background: linear-gradient(90deg,#ccfbf1,#2dd4bf,#0891b2,#1e40af,#1e1b4b); }
+  #legend .bar.meas { background: linear-gradient(90deg,#f3e8ff,#c084fc,#9333ea,#6b21a8,#3b0764); }
   #legend .lab { display: flex; justify-content: space-between; }
   #legend .cap { margin-top: 7px; font-weight: 600; color: var(--ink); font-size: 11px; }
   #player { bottom: 16px; left: 50%; transform: translateX(-50%);
@@ -104,15 +104,14 @@
 
 <div id="legend" class="panel">
   <div id="leg-title" style="font-weight:600;color:var(--ink)">PM2.5, ug/m3</div>
-  <div class="cap">predicted field</div>
+  <div class="cap">predicted (no sensor nearby)</div>
   <div class="bar pred"></div>
   <div class="lab"><span>0</span><span id="leg-max-p">30+</span></div>
-  <div class="cap">measured stations</div>
+  <div class="cap">sensor-verified (&le;25 km) + stations</div>
   <div class="bar meas"></div>
   <div class="lab"><span>0</span><span id="leg-max-m">30+</span></div>
-  <div class="cap" style="display:flex;align-items:center;gap:7px">
-    <span style="display:inline-block;width:26px;border-top:2px dashed #0891b2"></span>
-    sensor-anchored zone (25 km)
+  <div class="cap" style="font-weight:400;color:var(--sub)">
+    faint hexes = far from any sensor, low trust
   </div>
 </div>
 

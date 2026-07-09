@@ -1,8 +1,9 @@
 "use strict";
 // downwind map -- satellite canvas (ghost-fleet projection core) under a light,
 // airy skin. Two color codes, same direction (darker = worse air):
-//   predicted field  = warm ramp (pale yellow -> deep red), pixelated raster
-//   measured station = cool ramp (pale teal -> deep indigo), solid dots
+//   sensor-verified hexes + station dots = violet ramp (pale lilac -> deep purple)
+//   predicted hexes                      = warm ramp (pale yellow -> deep red)
+// and hexes fade with distance from any sensor: faint = we are guessing.
 const api = (p) => fetch(p).then(r => r.json());
 const cv = document.getElementById("map"), cx = cv.getContext("2d");
 
@@ -50,8 +51,9 @@ function ramp(stops, t) {
 }
 const PRED = [[0, [254, 249, 195]], [0.3, [251, 191, 36]], [0.55, [249, 115, 22]],
               [0.8, [220, 38, 38]], [1, [127, 29, 29]]];
-const MEAS = [[0, [204, 251, 241]], [0.3, [45, 212, 191]], [0.55, [8, 145, 178]],
-              [0.8, [30, 64, 175]], [1, [30, 27, 75]]];
+// violet, not blue: blue whispers "all good" -- pollution never gets to say that
+const MEAS = [[0, [243, 232, 255]], [0.3, [192, 132, 252]], [0.55, [147, 51, 234]],
+              [0.8, [107, 33, 168]], [1, [59, 7, 100]]];
 
 // ---- satellite tiles (Esri World Imagery, free) under a bright airy wash ----
 const TILES = new Map();
@@ -92,51 +94,59 @@ function drawTiles() {
   return drew > 0;
 }
 
-// ---- the predicted field: crisp pixel raster, one cell per grid point ----
-let rasterBuf = null;
+// ---- the predicted field: gapless screen-space honeycomb ----
+// Small fixed-size hexes tile the viewport; each samples its NEAREST grid cell
+// (no interpolation), so 0.35-deg cells show as vivid flat blocks of hexes with
+// crisp steps at cell edges -- mosaic, not blur. The map tells you how much to
+// trust each cell:
+//   hue     = trust regime (cool = sensor within VERIFIED_KM, warm = model guess)
+//   opacity = value, then fades with distance from any sensor (far = ghost haze)
+const VERIFIED_KM = 25;
+const HEX_PX = 13;                      // on-screen hex width
+function hexPath(x, y, r) {
+  cx.beginPath();
+  for (let i = 0; i < 6; i++) {
+    const a = Math.PI / 2 + i * Math.PI / 3;   // pointy-top
+    i ? cx.lineTo(x + r * Math.cos(a), y + r * Math.sin(a))
+      : cx.moveTo(x + r * Math.cos(a), y + r * Math.sin(a));
+  }
+  cx.closePath();
+}
+function fieldIndex(f) {
+  // server emits the grid row-major (lats x lons) -- recover O(1) cell lookup
+  if (!f._idx) {
+    const pts = f.points, lat0 = pts[0].lat, lon0 = pts[0].lon;
+    let nCols = 1;
+    while (nCols < pts.length && pts[nCols].lat === lat0) nCols++;
+    f._idx = { lat0, lon0, nCols, nRows: Math.ceil(pts.length / nCols) };
+  }
+  return f._idx;
+}
 function drawField() {
   const f = S.field;
   if (!f || !f.points || S.tIdx == null) return;
   const vals = f[S.pol][S.tIdx];
   if (!vals) return;
-  const SC = 4;
-  const gw = Math.max(1, Math.ceil(W / SC)), gh = Math.max(1, Math.ceil(H / SC));
-  const acc = new Float32Array(gw * gh), wsum = new Float32Array(gw * gh);
-  // Shepard-style weighted splat = smooth interpolated field. Radius follows the
-  // real grid step; the y radius is stretched by 1/cos(lat) because grid rows are
-  // lat-regular but Mercator y is not (the old isotropic radius left dash rows).
-  const step = f.step || 0.35;
-  const radX = Math.max(2, step * cam.scale / SC * 1.35);
-  const vmax = VMAX[S.pol];
-  for (let i = 0; i < f.points.length; i++) {
-    const v = vals[i];
-    if (v == null) continue;
-    const p = f.points[i], q = proj(p.lon, p.lat);
-    const radY = radX / Math.max(0.4, Math.cos(p.lat * Math.PI / 180));
-    const gx = q.x / SC, gy = q.y / SC;
-    if (gx < -radX || gx > gw + radX || gy < -radY || gy > gh + radY) continue;
-    const x0 = Math.max(0, (gx - radX) | 0), x1 = Math.min(gw - 1, (gx + radX) | 0);
-    const y0 = Math.max(0, (gy - radY) | 0), y1 = Math.min(gh - 1, (gy + radY) | 0);
-    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-      const dx = (x - gx) / radX, dy = (y - gy) / radY, d2 = dx * dx + dy * dy;
-      if (d2 > 1) continue;
-      const w = Math.exp(-d2 / 0.45);
-      acc[y * gw + x] += v * w; wsum[y * gw + x] += w;
+  const g = fieldIndex(f), step = f.step || 0.35, vmax = VMAX[S.pol];
+  const R = HEX_PX / 1.732, rowStep = R * 1.5;
+  for (let ry = 0, y = 0; y <= H + R; ry++, y = ry * rowStep) {
+    for (let x = (ry & 1) ? HEX_PX / 2 : 0; x <= W + HEX_PX; x += HEX_PX) {
+      const ll = unproj(x, y);
+      const ic = Math.round((ll.lon - g.lon0) / step);
+      const ir = Math.round((ll.lat - g.lat0) / step);
+      if (ic < 0 || ic >= g.nCols || ir < 0 || ir >= g.nRows) continue;
+      const i = ir * g.nCols + ic, v = vals[i];
+      if (v == null) continue;
+      const t = Math.min(1, v / vmax);
+      const d = f.points[i].dist_km == null ? 9e9 : f.points[i].dist_km;
+      const fade = d <= 50 ? 1 : Math.max(0.3, 1 - (d - 50) / 260);
+      cx.globalAlpha = (0.62 + 0.36 * Math.sqrt(t)) * fade;
+      cx.fillStyle = `rgb(${ramp(d <= VERIFIED_KM ? MEAS : PRED, t).join(",")})`;
+      hexPath(x, y, R * 0.93);         // hair gap: mosaic seams, not holes
+      cx.fill();
     }
   }
-  if (!rasterBuf) rasterBuf = document.createElement("canvas");
-  rasterBuf.width = gw; rasterBuf.height = gh;
-  const rcx = rasterBuf.getContext("2d"), img = rcx.createImageData(gw, gh), D = img.data;
-  for (let i = 0; i < acc.length; i++) {
-    if (wsum[i] < 0.05) { D[i * 4 + 3] = 0; continue; }
-    const v = acc[i] / wsum[i], t = Math.min(1, v / vmax);
-    const c = ramp(PRED, t);
-    D[i * 4] = c[0]; D[i * 4 + 1] = c[1]; D[i * 4 + 2] = c[2];
-    // sqrt curve: low values stay translucent haze, high values go opaque alarm
-    D[i * 4 + 3] = Math.round(60 + 165 * Math.sqrt(t));
-  }
-  rcx.putImageData(img, 0, 0);
-  cx.drawImage(rasterBuf, 0, 0, gw, gh, 0, 0, gw * SC, gh * SC);
+  cx.globalAlpha = 1;
 }
 
 // ---- measured stations: cool-ramp dots with white halo ----
@@ -171,38 +181,6 @@ function drawStations() {
   }
 }
 
-// ---- monitored-vs-predicted frontier: union outline of 25 km disks around the
-// sensors. Inside the line the field is anchored by ground truth; outside it is
-// pure prediction. Built by filling the union offscreen, erasing a shrunk copy
-// (destination-out), and drawing the leftover ring.
-const COVER_KM = 25;
-let coverBuf = null;
-function drawCoverage() {
-  if (!S.stations.length) return;
-  if (!coverBuf) coverBuf = document.createElement("canvas");
-  coverBuf.width = W; coverBuf.height = H;
-  const oc = coverBuf.getContext("2d");
-  const disks = [];
-  for (const s of S.stations) {
-    const q = proj(s.lon, s.lat);
-    const r = COVER_KM / 111 * cam.scale / Math.max(0.4, Math.cos(s.lat * Math.PI / 180));
-    if (q.x < -r || q.x > W + r || q.y < -r || q.y > H + r) continue;
-    disks.push([q.x, q.y, r]);
-  }
-  if (!disks.length) return;
-  oc.fillStyle = "#000";
-  for (const [x, y, r] of disks) { oc.beginPath(); oc.arc(x, y, r, 0, 7); oc.fill(); }
-  oc.globalCompositeOperation = "destination-out";
-  for (const [x, y, r] of disks) { oc.beginPath(); oc.arc(x, y, Math.max(0, r - 1.7), 0, 7); oc.fill(); }
-  oc.globalCompositeOperation = "source-over";
-  // recolor the ring via source-in, then stamp it on the map
-  oc.globalCompositeOperation = "source-in";
-  oc.fillStyle = "rgba(8,145,178,.75)";
-  oc.fillRect(0, 0, W, H);
-  oc.globalCompositeOperation = "source-over";
-  cx.drawImage(coverBuf, 0, 0);
-}
-
 let clickMark = null;
 function drawClickMark() {
   if (!clickMark) return;
@@ -220,7 +198,6 @@ function draw() {
   cx.fillStyle = "#dbeafe"; cx.fillRect(0, 0, W, H);
   drawTiles();
   drawField();
-  drawCoverage();
   drawStations();
   drawClickMark();
   cx.restore();

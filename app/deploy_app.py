@@ -1,11 +1,15 @@
 """Deploy downwind as a custom (FastAPI) Hopsworks app.
 
-Thin client on stock python-app-pipeline: fastapi/uvicorn/scikit-learn/joblib
-uv-installed at pod start (the embedded gap-filler model is a pickled sklearn
-HistGBR), server.py run from the FUSE repo path so a git pull + restart
-redeploys. Redeploy uses the full recovery sequence from ghost-fleet
-(stop, purge lingering k8s deployment, drain, stop zombie executions, settle)
--- app.stop() returns before the execution dies.
+Runs on downwind-app-env (python-app-pipeline clone + scikit-learn==1.8.0):
+the embedded gap-filler model is a sklearn 1.8.0 pickle, and the unpickle
+dies on any other sklearn (`No module named '_loss'`). Every version in the
+entrypoint install is pinned for the same reason -- an unpinned install at
+pod start is a time bomb that goes off on someone else's release day.
+server.py runs from the FUSE repo path so a git pull + restart redeploys.
+Redeploy uses the full recovery sequence from ghost-fleet (stop, purge
+lingering k8s deployment, drain, stop zombie executions, settle) --
+app.stop() returns before the execution dies. NOTE: environment and
+entrypoint are fixed at create; changing them = delete app + recreate.
 """
 import subprocess
 import time
@@ -14,13 +18,13 @@ from pathlib import Path
 import hopsworks
 
 APP_NAME = "downwind"
-ENV_NAME = "python-app-pipeline"
+ENV_NAME = "downwind-app-env"  # python-app-pipeline clone + scikit-learn==1.8.0 (model pickle needs it)
 
 _here = Path(__file__).resolve()
 rel = str(_here).split("/hopsfs/", 1)[1]
 APP_PATH = str(Path(rel).parent / "server.py")
 ENTRYPOINT = ('bash -lc "python -m uv pip install --system --no-cache '
-              "'fastapi==0.139.0' 'uvicorn==0.49.0' 'scikit-learn' 'joblib' && "
+              "'fastapi==0.139.0' 'uvicorn==0.49.0' 'scikit-learn==1.8.0' 'joblib==1.5.3' && "
               f'exec python /hopsfs/{rel.rsplit("/", 1)[0]}/server.py"')
 
 

@@ -75,10 +75,15 @@ AND the batch map builder. Never duplicated. Same discipline as `ghost_features.
 
 ## Pipelines (ordered, feature -> training -> inference)
 
-### F1. Satellite ingestion feature pipeline  `[blocked-by: nothing]`
-- Job `downwind-tropomi` (daily): pull Sentinel-5P NO2 column + aerosol index for the
-  European bbox, regrid to the working grid, write FG **`tropomi_column`** v1 (offline; key
-  cell + date). Resumable, rate-limit aware, cache the granules.
+### F1. Satellite ingestion feature pipeline  `[staged to v1.5]`
+- Staged after a working CAMS-based model (MVPS: ship the prediction service first, then add
+  the raster leg). Job `downwind-tropomi` (daily): pull Sentinel-5P NO2 column + aerosol
+  index at station locations, write FG **`tropomi_column`** v1 (offline; station_eoi + date).
+  Sampled per station, same shape as F3, so it slots into the FV without reshaping. Needs the
+  free Copernicus Data Space token for granule download (the only credential in the system).
+- In v1 the coarse satellite signal is carried by CAMS (F3), which assimilates Sentinel-5P.
+  F1 adds the *raw* column as the SOTA enhancement, the same staged discipline as
+  the-untested (FP-GBM bar, then the GNN).
 - Skill: **hops-features** -> hops-data-sources, hops-fg.
 
 ### F2. Ground-station label pipeline  `[blocked-by: nothing]`
@@ -87,10 +92,14 @@ AND the batch map builder. Never duplicated. Same discipline as `ghost_features.
   value, ts). `event_time` = measurement time. The weak sparse ground truth.
 - Skill: **hops-features** -> hops-data-sources, hops-fg.
 
-### F3. Weather feature pipeline  `[blocked-by: nothing]`
-- Job `downwind-weather` (hourly): open-meteo / ERA5 at station locations and grid cells,
-  write FG **`weather_cell`** v1 (offline; cell + hour). Wind, blh, temp, rh, precip,
-  pressure.
+### F3. Weather + CAMS feature pipeline  `[blocked-by: nothing]`
+- Job `downwind-weather` (hourly): open-meteo ERA5 weather + CAMS air quality, hourly per
+  station, write FG **`station_features`** v1 (offline; station_eoi + valid_time). Weather
+  (wind speed and direction, temp, humidity, precip, pressure) plus the CAMS ~10 km modelled
+  prior (pm2.5, no2, o3, so2, co, dust, aerosol optical depth). CAMS is the v1 coarse signal
+  (it already assimilates Sentinel-5P); the model refines it to a station reading with local
+  context. Station set and coordinates come from the EEA metadata, not the F2 label FG, so
+  this runs in parallel with the F2 backfill.
 - Skill: **hops-features** -> hops-data-sources, hops-fg.
 
 ### F4. Static context pipeline  `[blocked-by: nothing]`
@@ -99,20 +108,16 @@ AND the batch map builder. Never duplicated. Same discipline as `ghost_features.
   **`cell_context`** v1 (offline; key cell). `event_time` = build.
 - Skill: **hops-features** -> hops-data-sources, hops-fg.
 
-### F5. Training-pair builder  `[blocked-by: F1, F2, F3, F4]`
-- Job `downwind-pairs`: for each station x hour with a valid reading, assemble via the
-  shared extractor (satellite column at cell+day, weather at point+hour, static context,
-  temporal features), label = the station reading. Write FG **`training_sample`** v1
-  (offline). Self-labelled, the labels are free from the station network.
-- Skill: **hops-features** -> hops-fg.
-
-### FV. Feature view + MDTs  `[blocked-by: F5]`
-- FV **`air_quality_fv`** v1 over `training_sample`, one target per pollutant (or a
-  multi-output view). Tree models first, so minimal MDTs (log-target for the skewed
-  concentration, cyclic-encode hour and day-of-year). **Leakage rule: split BY station and
-  by spatial block, never random rows**, so validation measures true gap-filling, the sky
-  group-by-flight and untested scaffold-split discipline. Lowercase every feature name in
-  any exclusion set.
+### F5 / FV. Feature view (the join is the pairing)  `[blocked-by: F2, F3]`
+- No separate pairs FG. The feature store does the fusion: FV **`air_quality_fv`** v1 uses
+  `station_measurement` (label) as the spine, joined to `station_features` on `station_eoi`
+  with a point-in-time match on time (the weather + CAMS valid at the reading's hour). This
+  is the feature-store showpiece, one join, no materialised copy, no skew. Static context
+  (lat, lon, altitude, station area/type) rides along on the label FG.
+- Tree models first, so minimal MDTs (log-target for the skewed concentration, cyclic-encode
+  hour and day-of-year). **Leakage rule: split BY station and by spatial block, never random
+  rows**, so validation measures true gap-filling, the sky group-by-flight and untested
+  scaffold-split discipline. Lowercase every feature name in any exclusion set.
 - Skill: **hops-fv**, **hops-transformations**.
 
 ### T. Training pipeline  `[blocked-by: FV]`

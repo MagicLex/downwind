@@ -54,6 +54,7 @@ def config():
         "start": get("start", "2019-01-01"),
         "end": get("end", str(date.today() - timedelta(days=7))),
         "limit_stations": int(get("limit_stations", "0")),
+        "sample": int(get("sample", "0")),
         "resume": get("resume", "1") == "1",
         "dry": get("dry", "0") == "1",
     }
@@ -103,7 +104,11 @@ def main():
     if cfg["countries"] != "ALL":
         codes = {c.strip() for c in cfg["countries"].split(",")}
         stations = stations[stations["station_eoi"].str[:2].isin(codes)]
-    stations = stations.reset_index(drop=True)
+    if cfg["sample"] and cfg["sample"] < len(stations):
+        # fixed-seed spread across all countries (a first-model subset under the
+        # open-meteo daily call cap), not the first-N by alphabet.
+        stations = stations.sample(n=cfg["sample"], random_state=42)
+    stations = stations.sort_values("station_eoi").reset_index(drop=True)
     print(f"{len(stations)} NO2/PM2.5 stations")
 
     fg = done = None

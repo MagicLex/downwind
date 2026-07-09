@@ -16,23 +16,35 @@ Config via argv (`--key value`) or env (`KEY`); argv wins. Keys:
   dry         1 = assemble and print, no FG write               (default 0)
 """
 
+import glob
 import os
 import sys
-from pathlib import Path
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root for `collect`
+# The job upload relocates this script to Resources/jobs/<name>/, so __file__ no
+# longer sits in the repo. Find the repo on the FUSE mount by a known anchor file
+# (BLOCKERS: sibling imports break in the job pod).
+_here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _root in [_here] + sorted(glob.glob("/hopsfs/Users/*/downwind")):
+    if os.path.exists(os.path.join(_root, "downwind_features.py")):
+        sys.path.insert(0, _root)
+        break
 from collect import eea  # noqa: E402
 
 
 def config():
-    """argv `--key value` overrides env KEY overrides default."""
+    """argv `--key value` overrides env KEY overrides default. Robust to stray
+    injected tokens (BLOCKERS: scheduled jobs get extra argv)."""
     argv = {}
     a = sys.argv[1:]
-    for i in range(0, len(a) - 1, 2):
-        if a[i].startswith("--"):
+    i = 0
+    while i < len(a):
+        if a[i].startswith("--") and i + 1 < len(a):
             argv[a[i][2:].replace("-", "_")] = a[i + 1]
+            i += 2
+        else:
+            i += 1
 
     def get(key, default):
         return argv.get(key, os.environ.get(key.upper(), default))

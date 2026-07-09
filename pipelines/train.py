@@ -188,8 +188,13 @@ def main():
     out_dir = tempfile.mkdtemp()
     mr = project.get_model_registry()
 
+    # physical label bounds: EEA validated data still carries absurd outliers
+    # (NO2 in the thousands) that drown RMSE for model AND baseline alike
+    PHYS_MAX = {"no2": 500.0, "pm25": 800.0}
+
     for pol in pollutants:
         mask = (X["pollutant"] == pol).to_numpy()
+        mask &= (y["value"] > 0).to_numpy() & (y["value"] < PHYS_MAX[pol]).to_numpy()
         if mask.sum() < 500:
             print(f"[{pol}] only {mask.sum()} rows, skip")
             continue

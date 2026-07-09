@@ -417,8 +417,12 @@ async def _lifespan(_):
         t.cancel()
 
 
+# the proxy forwards the FULL mount path into the container (ghost-fleet scar):
+# mount the app at APP_BASE_URL_PATH so prefixed requests route; browser links
+# stay relative so they resolve under the public mount either way.
+BASE = os.environ.get("APP_BASE_URL_PATH", "").rstrip("/")
 asgi = FastAPI(lifespan=asynccontextmanager(_lifespan))
-asgi.mount("/", app)
+asgi.mount(BASE or "/", app)
 
 if __name__ == "__main__":
     import uvicorn

@@ -396,10 +396,12 @@ async def _lifespan(_):
         try:
             if "OPENMETEO_API_KEY" not in os.environ:
                 import hopsworks
+                hopsworks.login()  # secrets api needs an active connection
                 os.environ["OPENMETEO_API_KEY"] = \
                     hopsworks.get_secrets_api().get_secret("OPENMETEO_API_KEY").value
-        except Exception:
-            pass  # keyless works too
+                print("open-meteo key loaded from secrets")
+        except Exception as exc:
+            print(f"open-meteo key unavailable, keyless mode: {str(exc)[:80]}")
         load_stations()
         for step in (load_models, refresh_field):
             try:  # degraded boot beats no boot; the loops retry

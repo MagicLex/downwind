@@ -45,7 +45,8 @@ def _get_json(url: str, tries: int = 5) -> dict:
         try:
             return json.loads(urllib.request.urlopen(url, timeout=90).read())
         except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < tries - 1:   # rate limited, back off
+            # 429 = rate limited, 5xx = transient gateway wobble; both back off
+            if e.code in (429, 500, 502, 503, 504) and attempt < tries - 1:
                 time.sleep(2 ** attempt * 5)
                 continue
             raise

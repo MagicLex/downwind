@@ -21,6 +21,7 @@ Config via argv (`--key value`) or env (KEY); argv wins. Keys:
 import glob
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
 import pandas as pd
@@ -56,6 +57,7 @@ def config():
         "limit_stations": int(get("limit_stations", "0")),
         "sample": int(get("sample", "0")),
         "batch_rows": int(get("batch_rows", "1000000")),
+        "parallel": int(get("parallel", "16")),
         "resume": get("resume", "1") == "1",
         "dry": get("dry", "0") == "1",
     }
@@ -121,52 +123,56 @@ def main():
             print(f"resume: {len(done)} stations already present")
 
     cols = ["station_eoi", "valid_time", "lat", "lon"] + FEATURES
+
+    def fetch_one(row):
+        """One station -> its hourly features df (or None). Runs in a worker thread;
+        the slow part is the two open-meteo HTTP calls, so fetching is parallel."""
+        eoi = row["station_eoi"]
+        try:
+            df = openmeteo.station_hourly(row["lat"], row["lon"], cfg["start"], cfg["end"])
+        except Exception as exc:
+            print(f"  ! {eoi} open-meteo failed: {exc}")
+            return None
+        if df.empty:
+            return None
+        df.insert(0, "station_eoi", eoi)
+        df["lat"], df["lon"] = row["lat"], row["lon"]
+        df = df.dropna(subset=["cams_no2", "cams_pm25"])  # need the prior
+        return None if df.empty else df[cols]
+
+    todo = [row for _, row in stations.iterrows() if not (done and row["station_eoi"] in done)]
+    if cfg["limit_stations"]:
+        todo = todo[:cfg["limit_stations"]]
+    print(f"{len(todo)} stations to fetch ({cfg['parallel']} in parallel)")
+
     n, total = 0, 0
     buf, buf_rows = [], 0
 
     def flush():
-        # batch the writes: one insert per ~1M rows, not one Delta commit per station
-        # (the commit-cost-grows scar that killed the per-station version).
+        # one insert per ~1M rows, not one Delta commit per station (commit-cost scar)
         nonlocal buf, buf_rows, total
         if not buf:
             return
         big = pd.concat(buf, ignore_index=True)
         buf, buf_rows = [], 0
         total += len(big)
-        fg.insert(big[cols], wait=True)
-        print(f"  wrote {len(big)} rows ({n} stations so far, running {total})")
+        fg.insert(big, wait=True)
+        print(f"  wrote {len(big)} rows ({n} stations done, running {total})")
 
-    for idx, row in stations.iterrows():
-        if cfg["limit_stations"] and n >= cfg["limit_stations"]:
-            break
-        eoi = row["station_eoi"]
-        if done and eoi in done:
-            continue
-        try:
-            df = openmeteo.station_hourly(row["lat"], row["lon"], cfg["start"], cfg["end"])
-        except Exception as exc:
-            print(f"  ! {eoi} open-meteo failed: {exc}")
-            continue
-        if df.empty:
-            continue
-        df.insert(0, "station_eoi", eoi)
-        df["lat"] = row["lat"]
-        df["lon"] = row["lon"]
-        df = df.dropna(subset=["cams_no2", "cams_pm25"])  # need the prior
-        if df.empty:
-            continue
-        n += 1
-        if cfg["dry"]:
-            if n == 1:
-                print(df[["station_eoi", "valid_time", "wind_speed", "pressure",
-                          "cams_no2", "cams_pm25"]].head(4).to_string())
-            print(f"  {eoi}: {len(df)} hours "
-                  f"({df['valid_time'].dt.year.min()}-{df['valid_time'].dt.year.max()})")
-            continue
-        buf.append(df[cols])
-        buf_rows += len(df)
-        if buf_rows >= cfg["batch_rows"]:
-            flush()
+    with ThreadPoolExecutor(max_workers=cfg["parallel"]) as ex:
+        for df in ex.map(fetch_one, todo):  # inserts stay serial in the main thread
+            if df is None:
+                continue
+            n += 1
+            if cfg["dry"]:
+                if n == 1:
+                    print(df[["station_eoi", "valid_time", "wind_speed", "pressure",
+                              "cams_no2", "cams_pm25"]].head(4).to_string())
+                continue
+            buf.append(df)
+            buf_rows += len(df)
+            if buf_rows >= cfg["batch_rows"]:
+                flush()
     if not cfg["dry"]:
         flush()
     print(f"DONE: {n} stations, {total} rows written to station_features")

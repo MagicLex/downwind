@@ -15,11 +15,13 @@ The honest metric is the **error reduction over the raw CAMS prior at held-out s
 the model is only allowed to prove itself at stations it never trained on, so the number
 reflects real gap-filling, not memorising a sensor location.
 
-![the NO2 field over the Channel](assets/field-no2.png)
+![the PM2.5 field, hex mosaic: violet = sensor-verified, warm = predicted, faint = far from any sensor](assets/field-pm25.png)
 
-The predicted field (warm ramp), the measured stations (cool ramp), and a dashed frontier
-between what is sensor-anchored and what is pure prediction. The Channel shipping-lane NO2
-plume is model output, no sensor floats there.
+The field is a hex mosaic that encodes trust, not just concentration: warm hexes are pure
+model prediction, violet hexes sit within 25 km of a reporting sensor, and opacity falls
+with distance from any sensor, so a faint cell reads as "low trust". White dots are the
+measured stations. The click card interrogates any point: the model estimate, the CAMS
+prior it adjusted, and the nearest real sensor.
 
 ## Results (v1)
 

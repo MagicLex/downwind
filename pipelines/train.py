@@ -16,6 +16,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 
 import numpy as np
 import pandas as pd
@@ -44,7 +45,7 @@ def get_fv(fs):
     feat = fs.get_feature_group("station_features", version=1)
     query = label.select(
         ["value", "pollutant", "station_eoi"] + CONTEXT + CAT
-    ).join(feat.select(WEATHER + CAMS), on=["station_eoi"])
+    ).join(feat.select(WEATHER + CAMS), on=["station_eoi"], join_type="inner")
     return fs.get_or_create_feature_view(
         name="air_quality_fv", version=1,
         description="Ground PM2.5/NO2 (label) joined point-in-time to CAMS + weather "
@@ -161,7 +162,17 @@ def main():
     print("feature view ready:", fv.name, "v", fv.version)
 
     print("reading training data (in-memory) ...")
-    X, y = fv.training_data(training_helper_columns=True, event_time=True)
+    # The offline read via AFS is intermittently flaky (Errno 255 HDFS read on some
+    # attempts, clean on others). Bounded retries catch a good read.
+    for attempt in range(6):
+        try:
+            X, y = fv.training_data(training_helper_columns=True, event_time=True)
+            break
+        except Exception as exc:
+            if attempt == 5:
+                raise
+            print(f"  read attempt {attempt + 1} failed ({str(exc).splitlines()[0][:70]}), retry")
+            time.sleep(15)
     print("training rows:", len(X), "| columns:", list(X.columns))
 
     if "--peek" in sys.argv:

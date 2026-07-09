@@ -125,6 +125,12 @@ def main():
     if not cfg["dry"]:
         import hopsworks
         fg = get_fg(hopsworks.login().get_feature_store())
+        if "OPENMETEO_API_KEY" not in os.environ:
+            try:  # commercial key optional: keyless free tier works, just slower
+                os.environ["OPENMETEO_API_KEY"] = \
+                    hopsworks.get_secrets_api().get_secret("OPENMETEO_API_KEY").value
+            except Exception:
+                pass
         done = already_done(fg) if cfg["resume"] else set()
         if done:
             print(f"resume: {len(done)} stations already present")

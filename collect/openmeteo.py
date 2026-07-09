@@ -1,15 +1,20 @@
-"""open-meteo archive client -- keyless. Two coarse signals per station-hour:
+"""open-meteo archive client. Two coarse signals per station-hour:
 
   weather (ERA5 archive)          the column-to-ground modulator
   CAMS air quality (reanalysis)   the ~10km modelled prior the model refines
 
 One call per endpoint returns the full hourly series for a location, so a station
 costs two calls over the whole window. Rate-limit aware (bounded backoff on 429).
+
+Runs keyless on the free tier (600/min, 5k/hr, 10k/day) or, when OPENMETEO_API_KEY
+is set in the environment, on the commercial customer- endpoints (1M calls/month,
+separate quota).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -49,6 +54,10 @@ def _get_json(url: str, tries: int = 5) -> dict:
 def _series(api: str, lat: float, lon: float, start: str, end: str, rename: dict) -> pd.DataFrame:
     params = (f"?latitude={lat}&longitude={lon}&start_date={start}&end_date={end}"
               f"&hourly={','.join(rename)}")
+    key = os.environ.get("OPENMETEO_API_KEY")
+    if key:
+        api = api.replace("https://", "https://customer-")
+        params += f"&apikey={key}"
     d = _get_json(api + params)
     h = d.get("hourly")
     if not h or not h.get("time"):

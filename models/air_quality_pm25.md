@@ -3,6 +3,23 @@
 Ground-level PM2.5 gap-filler: given the CAMS modelled prior, current weather and station
 context at a point, predict what a ground station would measure there.
 
+## v2 (2026-07-09)
+
+Same architecture as v1, retrained after the station-label rebuild (the corrupt
+`station_measurement` FG was dropped and re-ingested from EEA) with physical label
+bounds (PM2.5 kept in (0, 800) ug/m3). The wider station set grew training data from
+3.3M to 4.9M station-hours over 117 stations.
+
+| metric | model | raw CAMS prior |
+|---|---|---|
+| RMSE | **10.44 ug/m3** | 12.92 ug/m3 |
+| MAE | **4.21 ug/m3** | 4.77 ug/m3 |
+| r2 | **0.61** | 0.40 |
+
+**19.2% RMSE reduction over the CAMS prior at held-out stations**, and unlike v1 the
+model now also wins the >100 km deep far field (10.2 vs 11.9 ug/m3 MAE). The app
+hot-swaps to the newest registry version automatically.
+
 ## v1 (2026-07-09)
 
 | | |

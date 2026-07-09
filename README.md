@@ -23,17 +23,17 @@ with distance from any sensor, so a faint cell reads as "low trust". White dots 
 measured stations. The click card interrogates any point: the model estimate, the CAMS
 prior it adjusted, and the nearest real sensor.
 
-## Results (v1)
+## Results
 
 In plain words: without this system, the best available estimate at an unmonitored point
-is the raw CAMS forecast. For PM2.5 the model's estimate is **20.9% closer to what a real
-station would have measured** (RMSE 14.76 down to 11.67 ug/m3), scored only at stations it
-never trained on.
+is the raw CAMS forecast. This system's estimate is **19.2% closer for PM2.5 and 22.9%
+closer for NO2 to what a real station would have measured** (PM2.5 RMSE 12.92 down to
+10.44 ug/m3, NO2 13.84 down to 10.67), scored only at stations the model never trained on.
 
 | model | held-out RMSE | CAMS prior RMSE | error reduction | r2 model / CAMS |
 |---|---|---|---|---|
-| air_quality_pm25 v1 | 11.67 ug/m3 | 14.76 ug/m3 | **20.9%** | 0.61 / 0.38 |
-| air_quality_no2 | retraining | | | |
+| air_quality_pm25 v2 | 10.44 ug/m3 | 12.92 ug/m3 | **19.2%** | 0.61 / 0.40 |
+| air_quality_no2 v1 | 10.67 ug/m3 | 13.84 ug/m3 | **22.9%** | 0.52 / 0.19 |
 
 ![pred vs obs, model and raw CAMS prior](assets/pred_vs_obs_pm25.png)
 
@@ -42,16 +42,18 @@ model hugs the diagonal tighter and kills the CAMS over-prediction cloud in the 
 
 ![error vs distance to nearest sensor](assets/error_vs_distance_pm25.png)
 
-Error by distance to the nearest other station: the model wins where stations are within
-50 km and roughly ties CAMS beyond that, where no neighbouring signal exists to learn from.
-That far-field gap is what the staged land-context features (v1.5) are for.
+Error by distance to the nearest other station: the model wins in the near field and,
+since the label rebuild widened the station set, in the deep far field too (>100 km:
+PM2.5 10.2 vs 11.9, NO2 7.7 vs 9.7 ug/m3 MAE). The 25-100 km band is a rough tie; that
+residual gap is what the staged land-context features (v1.5) are for. NO2 plots sit on
+the [model card](models/air_quality_no2.md) and the registry entry.
 
-Leave-stations-out GroupKFold over 80 stations, 3.3M station-hours, 5 countries
-(AL/BA/BE/LU/MT). A fifth of the remaining CAMS error at places the model has never seen
-is the whole point: that margin is what a new monitor would have measured. The first NO2
-run surfaced physically impossible label outliers (station-hours in the thousands of
-ug/m3) that drowned RMSE for model and baseline alike; it was withdrawn and the pipeline
-now applies physical label bounds before training. Per-model detail in
+Leave-stations-out GroupKFold over 149 NO2 / 117 PM2.5 stations, 11.3M station-hours,
+5 countries (AL/BA/BE/LU/MT). A fifth of the remaining CAMS error at places the model has
+never seen is the whole point: that margin is what a new monitor would have measured. The
+first NO2 run surfaced physically impossible label outliers (station-hours in the
+thousands of ug/m3) that drowned RMSE for model and baseline alike; it was withdrawn and
+the pipeline now applies physical label bounds before training. Per-model detail in
 [models/](models/).
 
 ## The idea

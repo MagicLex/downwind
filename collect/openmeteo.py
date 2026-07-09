@@ -6,9 +6,10 @@
 One call per endpoint returns the full hourly series for a location, so a station
 costs two calls over the whole window. Rate-limit aware (bounded backoff on 429).
 
-Runs keyless on the free tier (600/min, 5k/hr, 10k/day) or, when OPENMETEO_API_KEY
-is set in the environment, on the commercial customer- endpoints (1M calls/month,
-separate quota).
+Runs keyless on the free tier (600/min, 5k/hr, 10k/day). When OPENMETEO_API_KEY is
+set, the CAMS air-quality calls move to the commercial customer- endpoint (1M
+calls/month, separate quota). The ERA5 archive endpoint stays keyless: the API
+Standard plan does not cover the historical weather API (Professional does).
 """
 
 from __future__ import annotations
@@ -55,7 +56,7 @@ def _series(api: str, lat: float, lon: float, start: str, end: str, rename: dict
     params = (f"?latitude={lat}&longitude={lon}&start_date={start}&end_date={end}"
               f"&hourly={','.join(rename)}")
     key = os.environ.get("OPENMETEO_API_KEY")
-    if key:
+    if key and api == CAMS_API:  # Standard plan covers air-quality only
         api = api.replace("https://", "https://customer-")
         params += f"&apikey={key}"
     d = _get_json(api + params)

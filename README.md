@@ -9,80 +9,79 @@ What is in the air where nobody is measuring? A spatial system that estimates gr
 air pollution (PM2.5, NO2) across Europe at the places the ground-station network does not
 reach. A satellite sees a coarse column from space, a few thousand ground stations give
 sparse truth, weather and land context decide what actually reaches the air people breathe.
-The model learns the map between them at the stations, then fills the gaps between the dots,
-and reports a calibrated estimate with an uncertainty band, never a measurement.
+The model learns the map between them at the stations, then fills the gaps between the dots.
 
-The honest metric is the **error reduction over spatial interpolation at held-out
-stations**: the model is only allowed to prove itself at stations it never trained on, so
-the number reflects real gap-filling, not memorising a sensor location.
+The honest metric is the **error reduction over the raw CAMS prior at held-out stations**:
+the model is only allowed to prove itself at stations it never trained on, so the number
+reflects real gap-filling, not memorising a sensor location.
+
+![the NO2 field over the Channel](assets/field-no2.png)
+
+The predicted field (warm ramp), the measured stations (cool ramp), and a dashed frontier
+between what is sensor-anchored and what is pure prediction. The Channel shipping-lane NO2
+plume is model output, no sensor floats there.
+
+## Results (v1)
+
+| model | held-out RMSE | CAMS prior RMSE | error reduction | r2 model / CAMS |
+|---|---|---|---|---|
+| air_quality_pm25 v1 | 11.67 ug/m3 | 14.76 ug/m3 | **20.9%** | 0.61 / 0.38 |
+| air_quality_no2 | retraining | | | |
+
+Leave-stations-out GroupKFold over 80 stations, 3.3M station-hours, 5 countries
+(AL/BA/BE/LU/MT). A fifth of the remaining CAMS error at places the model has never seen
+is the whole point: that margin is what a new monitor would have measured. The first NO2
+run surfaced physically impossible label outliers (station-hours in the thousands of
+ug/m3) that drowned RMSE for model and baseline alike; it was withdrawn and the pipeline
+now applies physical label bounds before training. Per-model detail in
+[models/](models/).
 
 ## The idea
 
 Air quality is measured at points. Regulation, health studies and public dashboards then
 interpolate between those points, which smears over motorways, valleys, industrial plumes
 and everywhere a station is not. Satellite column data covers everywhere but sits kilometres
-up and averages over coarse cells. `downwind` fuses the two with the meteorology and land
-context that connect a column to a ground concentration, validated against the stations,
-then predicts the field everywhere. The reveal is the attention rail: the worst
-**unmonitored** hotspots, high predicted pollution far from any sensor, which is where the
-next monitor should go.
+up and averages over coarse cells. `downwind` fuses the station truth with the CAMS
+modelled prior, the meteorology that connects a column to a ground concentration, and the
+station context, validates at held-out stations, then predicts the field everywhere. The
+reveal is the attention rail: the worst **unmonitored** hotspots, high predicted pollution
+far from any sensor, which is where the next monitor should go.
 
 The estimate is for screening, exposure awareness and sensor-siting. It is not a regulatory
-measurement, every point carries its uncertainty, out-of-domain reads unknown, and every
-point links back to the raw source-of-truth services.
+measurement, and every point links back to the raw source-of-truth services.
 
 ## Architecture
 
 An FTI (feature, training, inference) system on Hopsworks. Every source arrives on its own
 clock and cadence and they are fused point-in-time, with no leakage and no train/serve skew.
-Serving fuses the cell's **precomputed** static context with the **on-demand** satellite and
-weather for the queried point and time. That fusion is the showpiece.
 
 ```mermaid
 flowchart LR
-    trop([Sentinel-5P · TROPOMI]):::ext
-    sta([EEA stations · label]):::ext
-    wx([weather · open-meteo]):::ext
-    ctx([land context · CORINE/OSM/GHSL]):::ext
-    cams([CAMS · baseline]):::ext
+    trop([Sentinel-5P TROPOMI]):::ext
+    sta([EEA stations, label]):::ext
+    wx([open-meteo ERA5 + CAMS]):::ext
 
     subgraph FE[Feature]
         direction TB
         f1[downwind-tropomi] --> tc[(tropomi_column)]:::hops
-        f2[downwind-stations] --> sm[(station_measurement · label)]:::hops
-        f3[downwind-weather] --> wc[(weather_cell)]:::hops
-        f4[downwind-context] --> cc[(cell_context)]:::hops
-        tc --> f5[downwind-pairs]
-        sm --> f5
-        wc --> f5
-        cc --> f5
-        f5 --> ts[(training_sample)]:::hops
+        f2[downwind-stations] --> sm[(station_measurement, label)]:::hops
+        f3[downwind-weather] --> sf[(station_features)]:::hops
     end
     subgraph TR[Training]
         direction TB
-        fv{{air_quality_fv}}:::hops --> t1[train GBM · leave-stations-out] --> reg[(Model Registry)]:::hops
+        fv{{air_quality_fv}}:::hops --> t1[GBM, leave-stations-out] --> reg[(Model Registry)]:::hops
     end
     subgraph INF[Inference]
         direction TB
-        map[downwind-map] --> gp[(grid_prediction)]:::hops
-        ep[[airscorer · KServe]]:::hops
-        gp --> app[airlive app]
-        ep --> app
-        sc[downwind-score] --> ps[(prediction_scored · live error)]:::hops
-        ps --> app
+        app[downwind app: embedded model over a live CAMS + weather grid]
     end
 
     trop --> f1
     sta --> f2
     wx --> f3
-    ctx --> f4
-    cams -. baseline .-> t1
-    ts --> fv
-    reg --> map
-    reg --> ep
-    gp --> sc
-    sm --> sc
-    who([who breathes what]):::ext --> app --> ep
+    sm --> fv
+    sf --> fv
+    reg --> app
 
     classDef hops fill:#10b98122,stroke:#34d399,color:#e5e7eb;
     classDef ext fill:none,stroke:#6b7280,color:#9ca3af,stroke-dasharray:4 3;
@@ -92,56 +91,58 @@ The sources, each on a different cadence:
 
 | source | cadence | role |
 |---|---|---|
-| Sentinel-5P TROPOMI | daily, ~5.5 km | NO2 column and aerosol index from space, the coarse signal |
-| EEA ground stations | hourly | the sparse ground-truth label, by station |
-| open-meteo / ERA5 | hourly | wind, boundary layer, precipitation, the column-to-ground modulator |
-| CORINE / OSM / GHSL / DEM | static | land cover, road density, population, elevation, point sources |
-| Copernicus CAMS | ~hourly, ~10 km | modelled ground concentration, a feature and a baseline to refine |
+| EEA ground stations | hourly, validated | the sparse ground-truth label, by station |
+| open-meteo ERA5 | hourly | wind, temperature, humidity, precipitation, pressure: the column-to-ground modulator |
+| Copernicus CAMS | hourly, ~10 km | modelled ground concentration: the prior the model refines and the baseline it must beat |
+| Sentinel-5P TROPOMI | daily, ~5.5 km | raw NO2 column + aerosol index from space; collected, staged for the v1.5 feature view (CAMS already assimilates it, v1.5 carries it raw) |
 
 The file-by-file map:
 
 ```
 downwind_features.py              shared, skew-free: (lat,lon,time) -> feature vector
-pipelines/tropomi_pipeline.py     F1  Sentinel-5P columns -> tropomi_column        (Hopsworks job)
-pipelines/stations_pipeline.py    F2  EEA/OpenAQ readings -> station_measurement   (Hopsworks job)
-pipelines/weather_pipeline.py     F3  open-meteo -> weather_cell                   (Hopsworks job)
-pipelines/context_pipeline.py     F4  CORINE/OSM/GHSL -> cell_context              (Hopsworks job)
-pipelines/pairs_pipeline.py       F5  station x hour samples -> training_sample    (Hopsworks job)
-pipelines/train.py                T   feature view -> air_quality_* -> registry    (Hopsworks job)
-pipelines/map_pipeline.py         I1  grid prediction -> grid_prediction           (Hopsworks job)
-pipelines/score_pipeline.py       M   held-out station scoring -> prediction_scored(Hopsworks job)
-serving/                          I2  airscorer predictor + KServe deploy
-app/                              A   airlive earth-observation app
-tools/                            schedule.py, build_envs.py
+collect/eea.py                    EEA download API + AQViewer metadata client
+collect/openmeteo.py              ERA5 + CAMS archive client (grid-cell fetch, rate-aware)
+collect/s5p.py                    CDSE OData search + S3 granule download + pixel sampling
+pipelines/stations_pipeline.py    F2  EEA readings -> station_measurement       (Hopsworks job)
+pipelines/weather_pipeline.py     F3  open-meteo -> station_features            (Hopsworks job)
+pipelines/tropomi_pipeline.py     F1  Sentinel-5P columns -> tropomi_column     (Hopsworks job)
+pipelines/train.py                T   feature view -> air_quality_* -> registry (Hopsworks job)
+app/                              I   FastAPI + canvas app, embedded model
+models/                           model cards
 reqs/downwind.md                  the FTI specification
 ```
+
+Weather and CAMS history are fetched per 0.25-degree grid cell and fanned out to the
+stations inside the cell: the underlying models carry no sub-cell information anyway, and
+it cuts the API call count ~7x, which is the difference between fitting in a rate limit
+and not.
 
 ## Reproduce
 
 Clone into a Hopsworks project on the `/hopsfs/...` FUSE mount. Paths self-derive, nothing
-is hardcoded to a username. Keys live in Hopsworks secrets, never in the repo.
+is hardcoded to a username. Keys live in Hopsworks secrets, never in the repo:
+`CDSE_S3_ACCESS_KEY` / `CDSE_S3_SECRET_KEY` (free Copernicus Data Space account, for
+Sentinel-5P) and optionally `OPENMETEO_API_KEY` (commercial; the keyless free tier works,
+slower).
 
 ```bash
-make envs            # clone the collector / serve envs + pin deps
-make tropomi-job     # Sentinel-5P columns
 make stations-job    # EEA station labels
-make weather-job     # open-meteo weather
-make context-job     # static land context (one-time)
-make pairs-job       # station x hour training samples
-make train-job       # air_quality_pm25 / air_quality_no2
-make map-job         # continuous grid prediction
-make serve           # airscorer KServe endpoint
-make score-job       # live held-out station scoring
-make app             # airlive earth-observation app
+make weather-job     # ERA5 weather + CAMS prior per station
+make tropomi-job     # Sentinel-5P columns (needs the CDSE keys)
+make train-job       # air_quality_pm25 / air_quality_no2 -> registry
+make app             # the map app
 ```
+
+Staged next (v1.5+): the raw TROPOMI column joined into the feature view, static land
+context (CORINE/OSM/GHSL), a KServe endpoint, and live held-out self-scoring.
 
 ## The demo
 
-`airlive`: a continuous European pollution map, denser than the sensor net. The ground
-stations sit on top as truth dots, the model fills everything between them. Click anywhere
-for a local estimate, its uncertainty, the plain-word reasons behind it (downwind of a
-motorway, a trapping boundary layer, a high satellite column) and the nearest real station
-to cross-check against. The attention rail ranks the worst unmonitored hotspots, where a
-monitor is missing. Hide the stations and the map still shows the plume, reveal them and
-they agree. Every point links out to the EEA portal and Copernicus, because the system
+A continuous European pollution map, denser than the sensor net. The predicted field and
+the measured stations carry separate color ramps (both read the same way, darker is worse),
+a dashed frontier marks where predictions are sensor-anchored versus pure gap-filling, and
+a 24-hour player animates the field around now. Click anywhere for a local estimate, the
+CAMS prior it refined, the plain-word reasons, and the nearest real station to cross-check
+against. The attention rail ranks the worst unmonitored hotspots, where a monitor is
+missing. Every point links out to the EEA portal and Copernicus, because the system
 estimates for screening, it does not measure.

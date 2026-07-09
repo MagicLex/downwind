@@ -1,53 +1,33 @@
 # downwind -- FTI on Hopsworks: ground-level air quality where no sensor reaches
-# Feature (satellite + stations + weather + context FGs) -> Training (GBM gap-filler, leave-stations-out) -> Inference (grid map + KServe + earth-obs app)
+# Feature (stations + weather/CAMS + satellite FGs) -> Training (GBM gap-filler, leave-stations-out) -> Inference (embedded-model map app)
 FEAT_ENV = python-feature-pipeline
 TRAIN_ENV = pandas-training-pipeline
+S5P_ENV = downwind-s5p-env
 
-envs:                ## clone the collector / serve envs and pin deps
-	python3 tools/build_envs.py
+stations-job:        ## deploy + run the EEA station label pull
+	hops job deploy downwind-stations pipelines/stations_pipeline.py --env $(FEAT_ENV) --overwrite --run
 
-tropomi-job:         ## deploy + schedule Sentinel-5P column ingestion (daily)
-	hops job deploy downwind-tropomi pipelines/tropomi_pipeline.py --env $(FEAT_ENV) --overwrite
-	python3 tools/schedule.py downwind-tropomi "0 30 5 ? * *" --run
+weather-job:         ## deploy + run the open-meteo weather + CAMS pull (per grid cell)
+	hops job deploy downwind-weather pipelines/weather_pipeline.py --env $(FEAT_ENV) --overwrite --run
 
-stations-job:        ## deploy + schedule EEA station label pull (hourly)
-	hops job deploy downwind-stations pipelines/stations_pipeline.py --env $(FEAT_ENV) --overwrite
-	python3 tools/schedule.py downwind-stations "0 15 0/1 ? * *" --run
+tropomi-job:         ## deploy + run Sentinel-5P column ingestion (needs CDSE keys in secrets)
+	hops job deploy downwind-tropomi pipelines/tropomi_pipeline.py --env $(S5P_ENV) --overwrite --run
 
-weather-job:         ## deploy + schedule open-meteo weather pull (hourly)
-	hops job deploy downwind-weather pipelines/weather_pipeline.py --env $(FEAT_ENV) --overwrite
-	python3 tools/schedule.py downwind-weather "0 25 0/1 ? * *" --run
+train-job:           ## deploy + run the air_quality retrain (registers to the model registry)
+	hops job deploy downwind-train pipelines/train.py --env $(TRAIN_ENV) --overwrite --run
 
-context-job:         ## deploy + run the static land context build (one-time, seasonal refresh)
-	hops job deploy downwind-context pipelines/context_pipeline.py --env $(FEAT_ENV) --overwrite --run
-
-pairs-job:           ## deploy + schedule the station x hour training-sample builder
-	hops job deploy downwind-pairs pipelines/pairs_pipeline.py --env $(FEAT_ENV) --overwrite
-	python3 tools/schedule.py downwind-pairs "0 40 0/1 ? * *" --run
-
-train-job:           ## deploy + schedule the air_quality retrain (daily; every run registered, serve best by held-out error)
-	hops job deploy downwind-train pipelines/train.py --env $(TRAIN_ENV) --overwrite
-	python3 tools/schedule.py downwind-train "0 40 2 ? * *"
-
-map-job:             ## deploy + schedule the continuous grid prediction (after satellite + weather refresh)
-	hops job deploy downwind-map pipelines/map_pipeline.py --env $(TRAIN_ENV) --overwrite
-	python3 tools/schedule.py downwind-map "0 0 6 ? * *" --run
-
-score-job:           ## deploy + schedule the held-out station self-scoring (hourly)
-	hops job deploy downwind-score pipelines/score_pipeline.py --env $(FEAT_ENV) --overwrite
-	python3 tools/schedule.py downwind-score "0 50 0/1 ? * *" --run
-
-serve:               ## deploy the airscorer KServe endpoint (after train)
-	python3 serving/deploy_serving.py
-
-app:                 ## deploy the airlive earth-observation app
+app:                 ## deploy the map app
 	python3 app/deploy_app.py
+
+# NOTE: `hops job deploy --overwrite` resets job resources to 1 core / 2 GB.
+# weather + tropomi want 8 GB, train wants 16 GB / 4 cores -- re-apply via
+# job.config["resourceConfig"] after a redeploy.
 
 smoke-stations:      ## run the EEA station pull from the terminal pod
 	python3 pipelines/stations_pipeline.py
-smoke-tropomi:       ## run a small Sentinel-5P pull from the terminal pod
-	python3 pipelines/tropomi_pipeline.py
+smoke-tropomi:       ## dry-run one Sentinel-5P day from the terminal pod
+	python3 pipelines/tropomi_pipeline.py --dry 1
 
 help:
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/  --/'
-.PHONY: envs tropomi-job stations-job weather-job context-job pairs-job train-job map-job score-job serve app smoke-stations smoke-tropomi help
+.PHONY: stations-job weather-job tropomi-job train-job app smoke-stations smoke-tropomi help

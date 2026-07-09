@@ -1,0 +1,25 @@
+# data stays on HopsFS, never in git
+data/
+*.parquet
+*.csv.gz
+*.nc
+*.grib
+*.tif
+*.tiff
+
+# secrets
+.env
+*.key
+secrets/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+.venv/
+
+# local model artifacts (registry is the source of truth)
+models/*/Files/
+*.joblib
+*.pkl

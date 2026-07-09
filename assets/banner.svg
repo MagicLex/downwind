@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" font-family="ui-monospace,Menlo,Consolas,monospace">
+  <defs>
+    <radialGradient id="plume" cx="72%" cy="45%" r="42%">
+      <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.55"/>
+      <stop offset="45%" stop-color="#ef4444" stop-opacity="0.22"/>
+      <stop offset="100%" stop-color="#0b0e11" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0b0e11"/>
+      <stop offset="100%" stop-color="#0f1720"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="300" fill="url(#sky)"/>
+  <rect width="1200" height="300" fill="url(#plume)"/>
+
+  <!-- sparse sensor grid: the dots we have -->
+  <g fill="#34d399" opacity="0.85">
+    <circle cx="120" cy="90" r="3"/><circle cx="300" cy="150" r="3"/>
+    <circle cx="210" cy="230" r="3"/><circle cx="470" cy="110" r="3"/>
+    <circle cx="560" cy="215" r="3"/><circle cx="700" cy="130" r="3"/>
+    <circle cx="880" cy="205" r="3"/><circle cx="1040" cy="95" r="3"/>
+    <circle cx="980" cy="240" r="3"/><circle cx="760" cy="250" r="3"/>
+  </g>
+  <!-- the field we fill between them -->
+  <g fill="#e5e7eb" opacity="0.10">
+    <circle cx="60" cy="60" r="2"/><circle cx="60" cy="120" r="2"/><circle cx="60" cy="180" r="2"/><circle cx="60" cy="240" r="2"/>
+    <circle cx="180" cy="60" r="2"/><circle cx="180" cy="120" r="2"/><circle cx="180" cy="180" r="2"/><circle cx="180" cy="240" r="2"/>
+    <circle cx="360" cy="60" r="2"/><circle cx="360" cy="120" r="2"/><circle cx="360" cy="180" r="2"/><circle cx="360" cy="240" r="2"/>
+    <circle cx="540" cy="60" r="2"/><circle cx="540" cy="120" r="2"/><circle cx="540" cy="180" r="2"/><circle cx="540" cy="240" r="2"/>
+    <circle cx="720" cy="60" r="2"/><circle cx="720" cy="120" r="2"/><circle cx="720" cy="180" r="2"/><circle cx="720" cy="240" r="2"/>
+    <circle cx="900" cy="60" r="2"/><circle cx="900" cy="120" r="2"/><circle cx="900" cy="180" r="2"/><circle cx="900" cy="240" r="2"/>
+    <circle cx="1080" cy="60" r="2"/><circle cx="1080" cy="120" r="2"/><circle cx="1080" cy="180" r="2"/><circle cx="1080" cy="240" r="2"/>
+  </g>
+
+  <text x="72" y="150" font-size="72" font-weight="700" fill="#e5e7eb" letter-spacing="2">downwind</text>
+  <text x="76" y="196" font-size="22" fill="#9ca3af">ground-level air quality where no sensor reaches</text>
+  <text x="76" y="232" font-size="15" fill="#6b7280">Sentinel-5P + EEA stations + weather + land context, fused in the feature store</text>
+</svg>

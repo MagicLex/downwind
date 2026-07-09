@@ -23,10 +23,26 @@ plume is model output, no sensor floats there.
 
 ## Results (v1)
 
+In plain words: without this system, the best available estimate at an unmonitored point
+is the raw CAMS forecast. For PM2.5 the model's estimate is **20.9% closer to what a real
+station would have measured** (RMSE 14.76 down to 11.67 ug/m3), scored only at stations it
+never trained on.
+
 | model | held-out RMSE | CAMS prior RMSE | error reduction | r2 model / CAMS |
 |---|---|---|---|---|
 | air_quality_pm25 v1 | 11.67 ug/m3 | 14.76 ug/m3 | **20.9%** | 0.61 / 0.38 |
 | air_quality_no2 | retraining | | | |
+
+![pred vs obs, model and raw CAMS prior](assets/pred_vs_obs_pm25.png)
+
+Left: the model at held-out stations. Right: the raw CAMS prior at the same points. The
+model hugs the diagonal tighter and kills the CAMS over-prediction cloud in the top-left.
+
+![error vs distance to nearest sensor](assets/error_vs_distance_pm25.png)
+
+Error by distance to the nearest other station: the model wins where stations are within
+50 km and roughly ties CAMS beyond that, where no neighbouring signal exists to learn from.
+That far-field gap is what the staged land-context features (v1.5) are for.
 
 Leave-stations-out GroupKFold over 80 stations, 3.3M station-hours, 5 countries
 (AL/BA/BE/LU/MT). A fifth of the remaining CAMS error at places the model has never seen

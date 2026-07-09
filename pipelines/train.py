@@ -180,7 +180,10 @@ def main():
         print("pollutant counts:", X["pollutant"].value_counts().to_dict())
         return
 
-    times = X["start_time"] if "start_time" in X else X.get("valid_time")
+    # event-time helpers come back PREFIXED (<fg>_<col>) from the FV read
+    tcol = (next((c for c in X.columns if c.endswith("start_time")), None)
+            or next((c for c in X.columns if c.endswith("valid_time")), None))
+    times = X[tcol]
     pollutants = argval("--pollutants", "no2,pm25").split(",")
     out_dir = tempfile.mkdtemp()
     mr = project.get_model_registry()

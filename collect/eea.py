@@ -60,23 +60,45 @@ def parquet_urls(country: str, pollutant_uri: str, dataset: int = 2) -> list[str
     return [u.strip() for u in resp.splitlines() if u.strip().startswith("http")]
 
 
-def station_metadata() -> pd.DataFrame:
-    """One row per station EoI: lat, lon, altitude, area, type."""
-    raw = _get(METADATA_URL, timeout=300)
-    z = zipfile.ZipFile(io.BytesIO(raw))
-    with z.open(z.namelist()[0]) as f:
-        df = pd.read_csv(f, encoding="utf-8", low_memory=False)
+_META_CACHE = None
+
+
+def _metadata_csv() -> pd.DataFrame:
+    """Raw AQViewer metadata, one row per sampling point. Cached per process."""
+    global _META_CACHE
+    if _META_CACHE is None:
+        raw = _get(METADATA_URL, timeout=300)
+        z = zipfile.ZipFile(io.BytesIO(raw))
+        with z.open(z.namelist()[0]) as f:
+            _META_CACHE = pd.read_csv(f, encoding="utf-8", low_memory=False)
+    return _META_CACHE
+
+
+def _station_level(df: pd.DataFrame) -> pd.DataFrame:
     keep = {
         "Air Quality Station EoI Code": "station_eoi",
         "Longitude": "lon", "Latitude": "lat", "Altitude": "altitude",
         "Air Quality Station Area": "station_area",
         "Air Quality Station Type": "station_type",
     }
-    df = df[list(keep)].rename(columns=keep)
+    out = df[list(keep)].rename(columns=keep)
     for c in ("lon", "lat", "altitude"):
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=["station_eoi", "lat", "lon"])
-    return df.groupby("station_eoi", as_index=False).first()
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    out = out.dropna(subset=["station_eoi", "lat", "lon"])
+    return out.groupby("station_eoi", as_index=False).first()
+
+
+def station_metadata() -> pd.DataFrame:
+    """One row per station EoI: lat, lon, altitude, area, type."""
+    return _station_level(_metadata_csv())
+
+
+def stations_for_pollutants(notations: list[str]) -> pd.DataFrame:
+    """Station-level coords for stations that measure any of the given pollutants
+    (e.g. ['NO2','PM2.5']). Drives F3/F4: only fetch where we will have a label."""
+    df = _metadata_csv()
+    df = df[df["Air Pollutant"].isin(notations)]
+    return _station_level(df)
 
 
 def station_eoi_from_samplingpoint(sp: str) -> str | None:

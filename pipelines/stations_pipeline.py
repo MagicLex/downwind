@@ -130,36 +130,33 @@ def main():
         else [c.strip() for c in cfg["countries"].split(",")]
     print(f"countries: {len(country_list)} -> {country_list}")
 
-    spark = fg = None
+    fg = None
     done = set()
     if not cfg["dry"]:
         import hopsworks
-        from hopsworks import build_spark
         fg = get_fg(hopsworks.login().get_feature_store())
         done = done_countries(fg) if cfg["resume"] else set()
         if done:
             print(f"resume: {sorted(done)} already present, skipping")
-        spark = build_spark("downwind_stations")
 
     total = 0
     buf, buf_rows = [], 0
 
     def flush():
-        # One Spark write per batch, not one Delta commit per file (the commit-cost-
-        # grows scar that killed the per-file version).
+        # One insert per batch, not one Delta commit per file (the commit-cost-grows
+        # scar that killed the per-file version). Spark write is the v1.1 lever for
+        # full-Europe scale; batched pandas is enough at a handful of countries.
         nonlocal buf, buf_rows, total
         if not buf:
             return
         big = pd.concat(buf, ignore_index=True)
         buf, buf_rows = [], 0
-        for c in ("start_time", "end_time"):
-            big[c] = pd.to_datetime(big[c], utc=True).dt.tz_localize(None)  # naive UTC for Spark
         total += len(big)
         if cfg["dry"]:
             print(f"  [dry] would write {len(big)} rows (running {total})")
         else:
-            fg.insert(spark.createDataFrame(big))
-            print(f"  wrote {len(big)} rows via Spark (running {total})")
+            fg.insert(big, wait=True)
+            print(f"  wrote {len(big)} rows (running {total})")
 
     for i, country in enumerate(country_list, 1):
         if country in done:

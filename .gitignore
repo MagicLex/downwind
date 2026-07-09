@@ -23,3 +23,6 @@ __pycache__/
 models/*/Files/
 *.joblib
 *.pkl
+
+# downloaded job logs
+logs-job-*/

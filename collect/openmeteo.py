@@ -55,7 +55,9 @@ def _series(api: str, lat: float, lon: float, start: str, end: str, rename: dict
         return pd.DataFrame()
     out = pd.DataFrame({"valid_time": pd.to_datetime(h["time"], utc=True)})
     for src, dst in rename.items():
-        out[dst] = pd.to_numeric(pd.Series(h.get(src)), errors="coerce")
+        # force float64: whole-number responses infer as bigint and clash with the
+        # double FG schema (playbook dtype gotcha).
+        out[dst] = pd.to_numeric(pd.Series(h.get(src)), errors="coerce").astype("float64")
     return out
 
 
